@@ -12,6 +12,7 @@ defmodule Libremarket.Supervisor do
   def init(_opts) do
     children = [
       {Libremarket.Compras.Server, %{}},
+      {Libremarket.Pagos.Server, %{}},
       {Libremarket.Infracciones.Server, %{}}
     ]
 
