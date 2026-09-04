@@ -1,9 +1,6 @@
 defmodule Libremarket.Supervisor do
   use Supervisor
 
-  @doc """
-  Inicia el supervisor
-  """
   def start_link() do
     Supervisor.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -12,8 +9,10 @@ defmodule Libremarket.Supervisor do
   def init(_opts) do
     children = [
       {Libremarket.Compras.Server, %{}},
+      {Libremarket.Ventas.Server, %{}},
       {Libremarket.Pagos.Server, %{}},
-      {Libremarket.Infracciones.Server, %{}}
+      {Libremarket.Infracciones.Server, %{}},
+      {Libremarket.Envios.Server, %{}}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

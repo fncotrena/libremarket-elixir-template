@@ -1,12 +1,9 @@
 defmodule Libremarket.Pagos do
 
   def pago() do
-    case Enum.random([:autorizado, :rechazado]) do
-      :autorizado ->
-        "Pago autorizado."
-
-      :rechazado ->
-        "Pago rechazado."
+    case Enum.random(1..100) <= 70 do
+      true -> :autorizado
+      false -> :rechazado
     end
   end
 
@@ -20,8 +17,8 @@ defmodule Libremarket.Pagos.Server do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  def pago(pid \\ __MODULE__) do
-    GenServer.call(pid, :pago)
+  def pago(pid \\ __MODULE__, id_compra) do
+    GenServer.call(pid, {:pago, id_compra})
   end
 
   @impl true
@@ -30,9 +27,10 @@ defmodule Libremarket.Pagos.Server do
   end
 
   @impl true
-  def handle_call(:pago, _from, state) do
+  def handle_call({:pago, id_compra}, _from, state) do
     resultado = Libremarket.Pagos.pago()
+    new_state = Map.put(state, id_compra, resultado)
 
-    {:reply, resultado, state}
+    {:reply, resultado, new_state}
   end
 end

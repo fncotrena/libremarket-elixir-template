@@ -1,23 +1,16 @@
 defmodule Libremarket.Infracciones do
 
   def detectar_infraccion() do
-    Enum.random([:true, :false])
+    Enum.random(1..100) <= 30
   end
 
 end
 
 defmodule Libremarket.Infracciones.Server do
-  @moduledoc """
-  Compras
-  """
 
   use GenServer
 
-  # API del cliente
 
-  @doc """
-  Crea un nuevo servidor de Compras
-  """
   def start_link(opts \\ %{}) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -30,22 +23,15 @@ defmodule Libremarket.Infracciones.Server do
     GenServer.call(pid, :listar_infracciones)
   end
 
-  # Callbacks
 
-  @doc """
-  Inicializa el estado del servidor
-  """
   @impl true
   def init(state) do
     {:ok, state}
   end
 
-  @doc """
-  Callback para un call :comprar
-  """
   @impl true
   def handle_call({:detectar_infraccion, id_compra}, _from, state) do
-    result = Libremarket.Infracciones.detectar_infraccion
+    result = Libremarket.Infracciones.detectar_infraccion()
     new_state = Map.put(state, id_compra, result)
     {:reply, result, new_state}
   end
