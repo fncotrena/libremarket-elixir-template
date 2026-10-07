@@ -11,7 +11,13 @@ end
 
 
 defmodule Libremarket.Pagos.Server do
+
   use GenServer
+  use AMQP
+  require Logger
+
+  @queue_name "pagos_cola"
+  @cola_compras "compras_cola"
 
   def start_link(opts \\ %{}) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -21,16 +27,63 @@ defmodule Libremarket.Pagos.Server do
     GenServer.call(pid, {:pago, id_compra})
   end
 
+  def listar_pagos(pid \\ __MODULE__) do
+    GenServer.call(pid, :listar_pagos)
+  end
+
   @impl true
   def init(state) do
-    {:ok, state}
+    {:ok, channel} = Producer.get_channel()
+    # Si el canal se cae, el servidor se reinicia y vuelve a suscribirse
+    Process.monitor(channel.pid)
+
+    # Declarar la cola de mensajes
+    Queue.declare(channel, @queue_name, durable: true)
+
+    # Configurar el consumidor
+    Basic.consume(channel, @queue_name, nil, no_ack: true)
+
+    {:ok, %{canal: channel, pagos: state}}
   end
 
   @impl true
   def handle_call({:pago, id_compra}, _from, state) do
-    resultado = Libremarket.Pagos.pago()
-    new_state = Map.put(state, id_compra, resultado)
+    {resultado, state} = pagar(id_compra, state)
+    {:reply, resultado, state}
+  end
 
-    {:reply, resultado, new_state}
+  @impl true
+  def handle_call(:listar_pagos, _from, state) do
+    {:reply, state.pagos, state}
+  end
+
+  @impl true
+  def handle_info({:basic_consume_ok, _meta}, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info({:basic_deliver, payload, _meta}, state) do
+    case String.split(payload, ":") do
+      ["pagar", id] ->
+        {resultado, state} = pagar(String.to_integer(id), state)
+        Producer.send_message(@cola_compras, "pago:#{id}:#{resultado}")
+        {:noreply, state}
+
+      _ ->
+        Logger.warning("Pagos: mensaje ignorado #{inspect(payload)}")
+        {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, _pid, motivo}, state) do
+    {:stop, {:canal_caido, motivo}, state}
+  end
+
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  defp pagar(id_compra, %{pagos: pagos} = state) do
+    resultado = Libremarket.Pagos.pago()
+    {resultado, %{state | pagos: Map.put(pagos, id_compra, resultado)}}
   end
 end

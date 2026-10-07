@@ -28,7 +28,8 @@ defmodule Simulador do
     compras = for _n <- 1 .. cantidad do
       Task.async(fn -> simular_compra() end)
     end
-    Task.await_many(compras)
+    # Las compras viajan por AMQP: esperar más que el timeout por defecto (5s)
+    Task.await_many(compras, 60_000)
   end
 
 end
