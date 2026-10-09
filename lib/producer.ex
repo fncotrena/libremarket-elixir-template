@@ -2,6 +2,8 @@ defmodule Producer do
 
   use AMQP
 
+  alias Libremarket.Middleware
+
   defmodule Message do
     defstruct [:content, :vector_clock]
   end
@@ -18,6 +20,19 @@ defmodule Producer do
         pagos: 0
       }
     end
+  end
+
+
+  def send_message(queue_name, mensaje, reloj, servidor) do
+    reloj = Middleware.incrementar(reloj, servidor)
+    payload = Middleware.adjuntar(mensaje, reloj)
+
+    {:ok, channel} = get_channel()
+    Queue.declare(channel, queue_name, durable: true)
+    Basic.publish(channel, "", queue_name, payload, persistent: true)
+    IO.puts("Mensaje enviado a #{queue_name}: #{payload}")
+
+    reloj
   end
 
   def send_message(queue_name, message) do

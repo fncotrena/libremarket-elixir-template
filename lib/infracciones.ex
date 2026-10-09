@@ -7,10 +7,12 @@ defmodule Libremarket.Infracciones do
 end
 
 defmodule Libremarket.Infracciones.Server do
- 
+
   use GenServer
   use AMQP
   require Logger
+
+  alias Libremarket.Middleware
 
   @queue_name "infracciones_cola"
   @cola_compras "compras_cola"
@@ -36,7 +38,7 @@ defmodule Libremarket.Infracciones.Server do
 
     Basic.consume(channel, @queue_name, nil, no_ack: true)
 
-    {:ok, %{canal: channel, infracciones: state}}
+    {:ok, %{canal: channel, infracciones: state, reloj: Middleware.nuevo()}}
   end
 
   @impl true
@@ -55,11 +57,15 @@ defmodule Libremarket.Infracciones.Server do
 
   @impl true
   def handle_info({:basic_deliver, payload, _meta}, state) do
-    case String.split(payload, ":") do
+    {mensaje, reloj_recibido} = Middleware.separar(payload)
+    reloj = state.reloj |> Middleware.mezclar(reloj_recibido) |> Middleware.incrementar(:infracciones)
+    state = %{state | reloj: reloj}
+
+    case String.split(mensaje, ":") do
       ["detectar", id] ->
         {result, state} = detectar(String.to_integer(id), state)
-        Producer.send_message(@cola_compras, "infraccion:#{id}:#{result}")
-        {:noreply, state}
+        reloj = Producer.send_message(@cola_compras, "infraccion:#{id}:#{result}", state.reloj, :infracciones)
+        {:noreply, %{state | reloj: reloj}}
 
       _ ->
         Logger.warning("Infracciones: mensaje ignorado #{inspect(payload)}")

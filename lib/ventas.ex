@@ -18,6 +18,8 @@ defmodule Libremarket.Ventas.Server do
   use AMQP
   require Logger
 
+  alias Libremarket.Middleware
+
   @queue_name "ventas_cola"
   @cola_compras "compras_cola"
 
@@ -39,7 +41,7 @@ defmodule Libremarket.Ventas.Server do
 
     Basic.consume(channel, @queue_name, nil, no_ack: true)
 
-    {:ok, %{productos: productos, canal: channel}}
+    {:ok, %{productos: productos, canal: channel, reloj: Middleware.nuevo()}}
   end
 
   @impl true
@@ -68,16 +70,21 @@ defmodule Libremarket.Ventas.Server do
 
   @impl true
   def handle_info({:basic_deliver, payload, _meta}, state) do
-    case String.split(payload, ":") do
+    # Middleware: mezclar el reloj recibido con el propio y avanzar el propio
+    {mensaje, reloj_recibido} = Middleware.separar(payload)
+    reloj = state.reloj |> Middleware.mezclar(reloj_recibido) |> Middleware.incrementar(:ventas)
+    state = %{state | reloj: reloj}
+
+    case String.split(mensaje, ":") do
       ["reservar", id, producto_id_str] ->
         case reservar(state.productos, String.to_integer(producto_id_str), 1) do
           {:ok, _nuevo, productos} ->
-            Producer.send_message(@cola_compras, "reserva:#{id}:ok")
-            {:noreply, %{state | productos: productos}}
+            reloj = Producer.send_message(@cola_compras, "reserva:#{id}:ok", state.reloj, :ventas)
+            {:noreply, %{state | productos: productos, reloj: reloj}}
 
           {:error, motivo} ->
-            Producer.send_message(@cola_compras, "reserva:#{id}:#{motivo}")
-            {:noreply, state}
+            reloj = Producer.send_message(@cola_compras, "reserva:#{id}:#{motivo}", state.reloj, :ventas)
+            {:noreply, %{state | reloj: reloj}}
         end
 
       ["liberar", _id, producto_id_str] ->

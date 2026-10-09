@@ -16,6 +16,8 @@ defmodule Libremarket.Pagos.Server do
   use AMQP
   require Logger
 
+  alias Libremarket.Middleware
+
   @queue_name "pagos_cola"
   @cola_compras "compras_cola"
 
@@ -43,7 +45,7 @@ defmodule Libremarket.Pagos.Server do
     # Configurar el consumidor
     Basic.consume(channel, @queue_name, nil, no_ack: true)
 
-    {:ok, %{canal: channel, pagos: state}}
+    {:ok, %{canal: channel, pagos: state, reloj: Middleware.nuevo()}}
   end
 
   @impl true
@@ -62,11 +64,16 @@ defmodule Libremarket.Pagos.Server do
 
   @impl true
   def handle_info({:basic_deliver, payload, _meta}, state) do
-    case String.split(payload, ":") do
+    # Middleware: mezclar el reloj recibido con el propio y avanzar el propio
+    {mensaje, reloj_recibido} = Middleware.separar(payload)
+    reloj = state.reloj |> Middleware.mezclar(reloj_recibido) |> Middleware.incrementar(:pagos)
+    state = %{state | reloj: reloj}
+
+    case String.split(mensaje, ":") do
       ["pagar", id] ->
         {resultado, state} = pagar(String.to_integer(id), state)
-        Producer.send_message(@cola_compras, "pago:#{id}:#{resultado}")
-        {:noreply, state}
+        reloj = Producer.send_message(@cola_compras, "pago:#{id}:#{resultado}", state.reloj, :pagos)
+        {:noreply, %{state | reloj: reloj}}
 
       _ ->
         Logger.warning("Pagos: mensaje ignorado #{inspect(payload)}")

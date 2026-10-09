@@ -20,6 +20,8 @@ defmodule Libremarket.Compras.Server do
   use AMQP
   require Logger
 
+  alias Libremarket.Middleware
+
   @queue_name "compras_cola"
   @cola_ventas "ventas_cola"
   @cola_infracciones "infracciones_cola"
@@ -40,7 +42,7 @@ defmodule Libremarket.Compras.Server do
 
     Basic.consume(channel, @queue_name, nil, no_ack: true)
 
-    {:ok, %{canal: channel, compras: %{}, pendientes: %{}}}
+    {:ok, %{canal: channel, compras: %{}, pendientes: %{}, reloj: Middleware.nuevo()}}
   end
 
   @impl true
@@ -55,7 +57,8 @@ defmodule Libremarket.Compras.Server do
       from: from
     }
 
-    Producer.send_message(@cola_ventas, "reservar:#{id_compra}:#{producto_id}")
+    reloj = Producer.send_message(@cola_ventas, "reservar:#{id_compra}:#{producto_id}", state.reloj, :compras)
+    state = %{state | reloj: reloj}
 
     {:noreply, put_in(state.pendientes[id_compra], compra)}
   end
@@ -70,7 +73,12 @@ defmodule Libremarket.Compras.Server do
 
   @impl true
   def handle_info({:basic_deliver, payload, _meta}, state) do
-    with [tipo, id_str | datos] <- String.split(payload, ":"),
+    # Middleware: mezclar el reloj recibido con el propio y avanzar el propio
+    {mensaje, reloj_recibido} = Middleware.separar(payload)
+    reloj = state.reloj |> Middleware.mezclar(reloj_recibido) |> Middleware.incrementar(:compras)
+    state = %{state | reloj: reloj}
+
+    with [tipo, id_str | datos] <- String.split(mensaje, ":"),
          {id, ""} <- Integer.parse(id_str),
          {:ok, compra} <- Map.fetch(state.pendientes, id) do
       {:noreply, avanzar(tipo, datos, id, compra, state)}
@@ -91,8 +99,8 @@ defmodule Libremarket.Compras.Server do
 
 
   defp avanzar("reserva", ["ok"], id, _compra, state) do
-    Producer.send_message(@cola_infracciones, "detectar:#{id}")
-    state
+    reloj = Producer.send_message(@cola_infracciones, "detectar:#{id}", state.reloj, :compras)
+    %{state | reloj: reloj}
   end
 
   defp avanzar("reserva", ["sin_stock"], id, _compra, state) do
@@ -104,33 +112,34 @@ defmodule Libremarket.Compras.Server do
   end
 
   defp avanzar("infraccion", ["true"], id, compra, state) do
-    liberar(id, compra)
-    finalizar(id, {:error, :infraccion}, state)
+    reloj = liberar(id, compra, state.reloj)
+    finalizar(id, {:error, :infraccion}, %{state | reloj: reloj})
   end
 
   defp avanzar("infraccion", ["false"], id, %{forma_entrega: :correo}, state) do
-    Producer.send_message(@cola_envios, "calcular_costo:#{id}")
-    state
+    reloj = Producer.send_message(@cola_envios, "calcular_costo:#{id}", state.reloj, :compras)
+    %{state | reloj: reloj}
   end
 
   defp avanzar("infraccion", ["false"], id, _compra, state) do
-    Producer.send_message(@cola_pagos, "pagar:#{id}")
-    state
+    reloj = Producer.send_message(@cola_pagos, "pagar:#{id}", state.reloj, :compras)
+    %{state | reloj: reloj}
   end
 
   defp avanzar("costo", [monto], id, _compra, state) do
-    Producer.send_message(@cola_pagos, "pagar:#{id}")
+    reloj = Producer.send_message(@cola_pagos, "pagar:#{id}", state.reloj, :compras)
+    state = %{state | reloj: reloj}
     put_in(state.pendientes[id].costo_envio, String.to_integer(monto))
   end
 
   defp avanzar("pago", ["rechazado"], id, compra, state) do
-    liberar(id, compra)
-    finalizar(id, {:error, :pago_rechazado}, state)
+    reloj = liberar(id, compra, state.reloj)
+    finalizar(id, {:error, :pago_rechazado}, %{state | reloj: reloj})
   end
 
   defp avanzar("pago", ["autorizado"], id, %{forma_entrega: :correo}, state) do
-    Producer.send_message(@cola_envios, "agendar:#{id}")
-    state
+    reloj = Producer.send_message(@cola_envios, "agendar:#{id}", state.reloj, :compras)
+    %{state | reloj: reloj}
   end
 
   defp avanzar("pago", ["autorizado"], id, compra, state) do
@@ -147,8 +156,8 @@ defmodule Libremarket.Compras.Server do
   end
 
 
-  defp liberar(id, compra) do
-    Producer.send_message(@cola_ventas, "liberar:#{id}:#{compra.producto_id}")
+  defp liberar(id, compra, reloj) do
+    Producer.send_message(@cola_ventas, "liberar:#{id}:#{compra.producto_id}", reloj, :compras)
   end
 
   defp finalizar(id, resultado, state) do
